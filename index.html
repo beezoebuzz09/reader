@@ -73,6 +73,25 @@
     margin: 0 0 8px 0;
   }
 
+  .bookmark-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid #e6d9a8;
+  }
+
+  .bookmark-item:last-child {
+    border-bottom: none;
+  }
+
+  .bookmark-snippet {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .note {
     margin-top: 14px;
     font-size: 12px;
@@ -107,6 +126,11 @@
 <br>
 <button onclick="skipChunk(-1)">⏮ Back</button>
 <button onclick="skipChunk(1)">⏭ Skip</button>
+<br>
+<button onclick="addBookmark()">🔖 Bookmark</button>
+<button onclick="toggleBookmarksPanel()">📑 Bookmarks</button>
+
+<div id="bookmarksPanel" class="banner"></div>
 
 <br><br>
 
@@ -125,8 +149,12 @@
 <div class="note">
   Tip: use Safari's Share &rarr; "Add to Home Screen" to install this as an app icon.
   While reading, your screen is kept awake automatically. If you manually lock your
-  phone, iOS may pause speech in the background — reopen the app and tap "Continue"
-  if prompted to pick back up exactly where you left off.
+  phone or switch apps, iOS may pause speech in the background — reopen the app and
+  tap <b>⏯ Resume</b> (or "Continue" if prompted) to pick back up exactly where you
+  left off, even after fully closing the app. <b>▶ Play</b> always restarts from the
+  beginning; <b>⏯ Resume</b> always continues from your last spot. Use
+  <b>🔖 Bookmark</b> to save specific spots you want to jump back to later (separate
+  from the automatic "last position").
 </div>
 
 <audio id="silentAudio" loop playsinline preload="auto" style="display:none"
@@ -142,7 +170,8 @@ let isReadingActive = false;
 let currentFileName = "";
 let lastSelectedVoiceName = null;
 let wakeLock = null;
-let pendingSession = null;
+let currentBookKey = null;
+let bookmarksPanelOpen = false;
 let playToken = 0;
 
 // Cancelling speechSynthesis doesn't reliably suppress a queued onend/onerror
@@ -159,6 +188,7 @@ const voiceSelect = document.getElementById("voiceSelect");
 const resumeBanner = document.getElementById("resumeBanner");
 const resumeText = document.getElementById("resumeText");
 const continueBanner = document.getElementById("continueBanner");
+const bookmarksPanel = document.getElementById("bookmarksPanel");
 const silentAudio = document.getElementById("silentAudio");
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
@@ -245,11 +275,12 @@ async function readPDF() {
 
   currentFileName = file.name;
   prepareChunks(fullText);
+  currentBookKey = computeBookKey(currentFileName, fullText);
   resumeBanner.style.display = "none";
-  pendingSession = null;
 
-  idbPut("book", { fileName: currentFileName, fullText, savedAt: Date.now() }).catch(() => {});
+  idbPut(STORE_NAME, "book", { fileName: currentFileName, fullText, savedAt: Date.now() }).catch(() => {});
   savePosition();
+  renderBookmarksList();
 
   statusEl.textContent = "Status: Ready to play";
 }
@@ -479,42 +510,63 @@ function hideContinuePromptAndResume() {
 
 // PERSISTENCE (IndexedDB) — survive the page/app being fully reloaded
 const DB_NAME = "audiobook-reader";
-const STORE_NAME = "session";
+const STORE_NAME = "session";       // keys: "book", "position" (auto-tracked)
+const BOOKMARKS_STORE = "bookmarks"; // user-created markers, autoIncrement id
+const DB_VERSION = 2;
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+      if (!db.objectStoreNames.contains(BOOKMARKS_STORE)) {
+        db.createObjectStore(BOOKMARKS_STORE, { keyPath: "id", autoIncrement: true });
+      }
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-async function idbPut(key, value) {
+async function idbPut(store, key, value) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).put(value, key);
+    const tx = db.transaction(store, "readwrite");
+    if (key === undefined) tx.objectStore(store).put(value);
+    else tx.objectStore(store).put(value, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
-async function idbGet(key) {
+async function idbGet(store, key) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readonly");
-    const req = tx.objectStore(STORE_NAME).get(key);
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).get(key);
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-async function idbDelete(key) {
+async function idbGetAll(store) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).delete(key);
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDelete(store, key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).delete(key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -523,7 +575,7 @@ async function idbDelete(key) {
 function savePosition() {
   const voices = speechSynthesis.getVoices();
   const voiceName = voices[voiceSelect.value] ? voices[voiceSelect.value].name : null;
-  idbPut("position", {
+  idbPut(STORE_NAME, "position", {
     currentChunkIndex,
     voiceName,
     speed: speedSlider.value,
@@ -531,59 +583,167 @@ function savePosition() {
   }).catch(() => {});
 }
 
-async function checkForSavedSession() {
+// Stable-ish per-book identifier so bookmarks and position don't cross-contaminate
+// between different files that happen to share a name.
+function computeBookKey(name, text) {
+  const sample = `${name || ""}::${text.length}::${text.slice(0, 500)}`;
+  let hash = 5381;
+  for (let i = 0; i < sample.length; i++) {
+    hash = ((hash << 5) + hash + sample.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+// Loads the last book + position into memory immediately on page load, so
+// Play/Resume/Skip/Bookmark all work right away — even if the page was fully
+// reloaded (e.g. iOS discarded it while backgrounded) and the user never
+// interacts with the resume banner below.
+async function hydrateFromStorage() {
   try {
-    const book = await idbGet("book");
-    const position = await idbGet("position");
-    if (book && book.fullText) {
-      pendingSession = { book, position };
-      const sentenceNote = position ? ` — from sentence ${position.currentChunkIndex + 1}` : "";
-      resumeText.textContent = `Resume "${book.fileName}"${sentenceNote}?`;
-      resumeBanner.style.display = "block";
+    const book = await idbGet(STORE_NAME, "book");
+    const position = await idbGet(STORE_NAME, "position");
+    if (!book || !book.fullText) return;
+
+    currentFileName = book.fileName;
+    fullText = book.fullText;
+    prepareChunks(fullText);
+    currentBookKey = computeBookKey(currentFileName, fullText);
+
+    if (position) {
+      currentChunkIndex = Math.min(position.currentChunkIndex || 0, Math.max(chunks.length - 1, 0));
+      if (position.speed) {
+        speedSlider.value = position.speed;
+        speedValue.textContent = position.speed + "x";
+      }
+      if (position.voiceName) {
+        lastSelectedVoiceName = position.voiceName;
+        const voices = speechSynthesis.getVoices();
+        const idx = voices.findIndex(v => v.name === position.voiceName);
+        if (idx >= 0) voiceSelect.value = idx;
+      }
     }
+
+    previewEl.textContent = fullText.slice(0, 1000) + "...";
+    statusEl.textContent =
+      `Status: Loaded "${currentFileName}" — tap ⏯ Resume to continue from sentence ${currentChunkIndex + 1} of ${chunks.length}`;
+
+    const sentenceNote = ` — from sentence ${currentChunkIndex + 1}`;
+    resumeText.textContent = `Resume "${currentFileName}"${sentenceNote}?`;
+    resumeBanner.style.display = "block";
+
+    renderBookmarksList();
   } catch (err) {
-    console.warn("Could not check for saved session:", err);
+    console.warn("Could not hydrate saved session:", err);
   }
 }
 
 function handleResumeSession() {
-  if (!pendingSession) return;
-  const { book, position } = pendingSession;
-
-  currentFileName = book.fileName;
-  fullText = book.fullText;
-  prepareChunks(fullText);
-
-  if (position) {
-    currentChunkIndex = Math.min(position.currentChunkIndex || 0, Math.max(chunks.length - 1, 0));
-    if (position.speed) {
-      speedSlider.value = position.speed;
-      speedValue.textContent = position.speed + "x";
-    }
-    if (position.voiceName) {
-      lastSelectedVoiceName = position.voiceName;
-      const voices = speechSynthesis.getVoices();
-      const idx = voices.findIndex(v => v.name === position.voiceName);
-      if (idx >= 0) voiceSelect.value = idx;
-    }
-  }
-
-  previewEl.textContent = fullText.slice(0, 1000) + "...";
   resumeBanner.style.display = "none";
-  pendingSession = null;
-
   // This click is a real user gesture, so we can start speech immediately.
   beginPlaybackFromCurrentIndex();
 }
 
 function handleDiscardSession() {
-  idbDelete("book").catch(() => {});
-  idbDelete("position").catch(() => {});
+  idbDelete(STORE_NAME, "book").catch(() => {});
+  idbDelete(STORE_NAME, "position").catch(() => {});
   resumeBanner.style.display = "none";
-  pendingSession = null;
+  fullText = "";
+  chunks = [];
+  currentChunkIndex = 0;
+  currentFileName = "";
+  currentBookKey = null;
+  previewEl.textContent = "";
+  statusEl.textContent = "Status: Idle";
 }
 
-checkForSavedSession();
+// BOOKMARKS — user-created markers into the current book's sentence chunks
+// (there's no PDF page concept left once text is extracted and re-chunked,
+// so bookmarks point at a sentence index + a text snippet instead of a page).
+async function addBookmark() {
+  if (!chunks.length) return alert("Load a PDF first");
+  const snippet = (chunks[currentChunkIndex] || "").trim().slice(0, 80);
+  await idbPut(BOOKMARKS_STORE, undefined, {
+    bookKey: currentBookKey,
+    fileName: currentFileName,
+    chunkIndex: currentChunkIndex,
+    snippet,
+    createdAt: Date.now(),
+  }).catch(() => {});
+  statusEl.textContent = `Status: Bookmarked sentence ${currentChunkIndex + 1}`;
+  renderBookmarksList();
+}
+
+async function toggleBookmarksPanel() {
+  bookmarksPanelOpen = !bookmarksPanelOpen;
+  bookmarksPanel.style.display = bookmarksPanelOpen ? "block" : "none";
+  if (bookmarksPanelOpen) await renderBookmarksList();
+}
+
+async function renderBookmarksList() {
+  if (!bookmarksPanelOpen) return;
+
+  if (!currentBookKey) {
+    bookmarksPanel.innerHTML = "<p>Load a PDF to see bookmarks.</p>";
+    return;
+  }
+
+  let all = [];
+  try {
+    all = await idbGetAll(BOOKMARKS_STORE);
+  } catch (err) {
+    bookmarksPanel.innerHTML = "<p>Could not load bookmarks.</p>";
+    return;
+  }
+
+  const mine = all
+    .filter(b => b.bookKey === currentBookKey)
+    .sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+  if (!mine.length) {
+    bookmarksPanel.innerHTML = "<p>No bookmarks yet for this book. Tap 🔖 Bookmark while reading to add one.</p>";
+    return;
+  }
+
+  bookmarksPanel.innerHTML = "";
+  mine.forEach(b => {
+    const row = document.createElement("div");
+    row.className = "bookmark-item";
+
+    const label = document.createElement("span");
+    label.className = "bookmark-snippet";
+    label.textContent = `#${b.chunkIndex + 1}: ${b.snippet}`;
+
+    const jumpBtn = document.createElement("button");
+    jumpBtn.textContent = "Jump";
+    jumpBtn.onclick = () => jumpToBookmark(b.chunkIndex);
+
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "✕";
+    delBtn.onclick = () => deleteBookmark(b.id);
+
+    row.appendChild(label);
+    row.appendChild(jumpBtn);
+    row.appendChild(delBtn);
+    bookmarksPanel.appendChild(row);
+  });
+}
+
+function jumpToBookmark(chunkIndex) {
+  if (!chunks.length) return;
+  cancelSpeech();
+  currentChunkIndex = Math.min(Math.max(chunkIndex, 0), chunks.length - 1);
+  savePosition();
+  // This runs from a button click, so it's a valid user gesture for speech.
+  beginPlaybackFromCurrentIndex();
+}
+
+async function deleteBookmark(id) {
+  await idbDelete(BOOKMARKS_STORE, id).catch(() => {});
+  renderBookmarksList();
+}
+
+
+hydrateFromStorage();
 
 </script>
 

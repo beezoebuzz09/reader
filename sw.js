@@ -1,5 +1,5 @@
 // Bump this on every deploy that changes cached files, so clients pick up updates.
-const CACHE_NAME = 'audiobook-reader-v1';
+const CACHE_NAME = 'audiobook-reader-v2';
 
 const APP_SHELL = [
   './',

@@ -34,7 +34,11 @@ iOS Safari (even installed home-screen apps) suspends JavaScript speech synthesi
 - **Auto-resume + "Tap to continue"** — your reading position is saved continuously. If iOS does kill speech while backgrounded, reopening the app tries to silently resume automatically; if iOS blocks that too, a one-tap "Continue reading" prompt appears so you pick up exactly where you left off instead of losing your place.
 - **Resume across app restarts** — if you fully close and reopen the app later, it offers to resume the last PDF from the last sentence spoken (stored locally via IndexedDB — nothing leaves your phone).
 
-If you manually press the physical lock button while reading, iOS may still pause speech until you unlock again — this is the one case no PWA can fully avoid, short of generating actual audio files server-side (a different architecture with its own tradeoffs: needs a TTS API, an API key, network access, and per-character cost).
+If you manually press the physical lock button while reading, iOS may still pause speech until you unlock again — this is the one case no PWA can fully avoid, short of generating actual audio files server-side (a different architecture with its own tradeoffs: needs a TTS API, an API key, network access, and per-character cost). Either way, your position is saved continuously (via IndexedDB), so **⏯ Resume always continues from exactly where you left off** — even after the app is fully closed and reopened — while **▶ Play always restarts from the beginning**.
+
+## Bookmarks
+
+Tap **🔖 Bookmark** any time while reading to save your current spot. Tap **📑 Bookmarks** to see the list for the currently loaded book, jump back to any of them, or delete ones you don't need. Bookmarks are keyed to a fingerprint of the file's name + extracted text, so re-loading the same PDF later reunites you with the same bookmarks. Since this is a chunk-based reader (PDF text is flattened and re-split into speakable sentences), bookmarks point at a sentence position with a text snippet — not a PDF page number.
 
 ## Local development
 
