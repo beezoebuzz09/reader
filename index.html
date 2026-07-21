@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>PDF Audiobook Reader</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1c1c28">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Audiobook">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png">
+
+<script src="vendor/pdf.min.js"></script>
+
+<style>
+  body {
+    font-family: -apple-system, sans-serif;
+    padding: 20px;
+    background: #f2f2f2;
+  }
+
+  h1 {
+    font-size: 20px;
+  }
+
+  button {
+    padding: 10px 14px;
+    margin: 5px 3px;
+    border: none;
+    border-radius: 8px;
+    background: black;
+    color: white;
+    font-size: 14px;
+  }
+
+  button:disabled {
+    background: gray;
+  }
+
+  input[type="range"] {
+    width: 100%;
+  }
+
+  #status {
+    margin-top: 10px;
+    font-size: 14px;
+  }
+
+  #textPreview {
+    margin-top: 15px;
+    max-height: 180px;
+    overflow: auto;
+    background: white;
+    padding: 10px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+
+  .banner {
+    display: none;
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 8px;
+    background: #fff3cd;
+    font-size: 13px;
+  }
+
+  .banner p {
+    margin: 0 0 8px 0;
+  }
+
+  .note {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #666;
+    line-height: 1.5;
+  }
+</style>
+</head>
+
+<body>
+
+<h1>📖 PDF Audiobook (Local)</h1>
+
+<div id="resumeBanner" class="banner">
+  <p id="resumeText"></p>
+  <button id="resumeConfirmBtn" onclick="handleResumeSession()">Resume</button>
+  <button id="resumeDiscardBtn" onclick="handleDiscardSession()">Discard</button>
+</div>
+
+<div id="continueBanner" class="banner">
+  <p>Playback paused (likely due to screen lock or switching apps).</p>
+  <button onclick="hideContinuePromptAndResume()">▶ Tap to continue</button>
+</div>
+
+<input type="file" id="fileInput" accept="application/pdf"><br><br>
+
+<button onclick="readPDF()">Load PDF</button>
+<button onclick="startReading()">▶ Play</button>
+<button onclick="pauseReading()">⏸ Pause</button>
+<button onclick="resumeReading()">⏯ Resume</button>
+<button onclick="stopReading()">⏹ Stop</button>
+<br>
+<button onclick="skipChunk(-1)">⏮ Back</button>
+<button onclick="skipChunk(1)">⏭ Skip</button>
+
+<br><br>
+
+<label>Speed: <span id="speedValue">1x</span></label>
+<input type="range" id="speed" min="0.3" max="3" step="0.1" value="1">
+
+<br><br>
+
+<label>Voice:</label>
+<select id="voiceSelect"></select>
+
+<div id="status">Status: Idle</div>
+
+<div id="textPreview"></div>
+
+<div class="note">
+  Tip: use Safari's Share &rarr; "Add to Home Screen" to install this as an app icon.
+  While reading, your screen is kept awake automatically. If you manually lock your
+  phone, iOS may pause speech in the background — reopen the app and tap "Continue"
+  if prompted to pick back up exactly where you left off.
+</div>
+
+<audio id="silentAudio" loop playsinline preload="auto" style="display:none"
+  src="data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==">
+</audio>
+
+<script>
+let fullText = "";
+let chunks = [];
+let currentChunkIndex = 0;
+let isPaused = false;
+let isReadingActive = false;
+let currentFileName = "";
+let lastSelectedVoiceName = null;
+let wakeLock = null;
+let pendingSession = null;
+let playToken = 0;
+
+// Cancelling speechSynthesis doesn't reliably suppress a queued onend/onerror
+// for the utterance that was in flight — bumping this token lets those stale
+// callbacks recognize they're stale and no-op instead of corrupting state.
+function cancelSpeech() {
+  playToken++;
+  speechSynthesis.cancel();
+}
+
+const statusEl = document.getElementById("status");
+const previewEl = document.getElementById("textPreview");
+const voiceSelect = document.getElementById("voiceSelect");
+const resumeBanner = document.getElementById("resumeBanner");
+const resumeText = document.getElementById("resumeText");
+const continueBanner = document.getElementById("continueBanner");
+const silentAudio = document.getElementById("silentAudio");
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
+
+
+// SERVICE WORKER (installability + offline app shell)
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(err => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
+
+
+// SPEED DISPLAY
+const speedSlider = document.getElementById("speed");
+const speedValue = document.getElementById("speedValue");
+
+speedSlider.oninput = () => {
+  speedValue.textContent = speedSlider.value + "x";
+};
+
+
+// LOAD VOICES + AUTO SELECT SAMANTHA (or the last voice the user picked)
+function loadVoices() {
+  const voices = speechSynthesis.getVoices();
+  if (!voices.length) return;
+
+  voiceSelect.innerHTML = "";
+
+  let samanthaIndex = 0;
+
+  voices.forEach((voice, index) => {
+    const option = document.createElement("option");
+    option.value = index;
+    option.textContent = voice.name;
+
+    if (voice.name.toLowerCase().includes("samantha")) {
+      samanthaIndex = index;
+    }
+
+    voiceSelect.appendChild(option);
+  });
+
+  const matchIndex = lastSelectedVoiceName
+    ? voices.findIndex(v => v.name === lastSelectedVoiceName)
+    : -1;
+
+  voiceSelect.value = matchIndex >= 0 ? matchIndex : samanthaIndex;
+  lastSelectedVoiceName = voices[voiceSelect.value] ? voices[voiceSelect.value].name : null;
+}
+
+voiceSelect.addEventListener("change", () => {
+  const voices = speechSynthesis.getVoices();
+  lastSelectedVoiceName = voices[voiceSelect.value] ? voices[voiceSelect.value].name : null;
+});
+
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+
+
+// READ PDF
+async function readPDF() {
+  const file = document.getElementById('fileInput').files[0];
+  if (!file) return alert("Select a PDF");
+
+  statusEl.textContent = "Status: Reading PDF...";
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  fullText = "";
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+
+    const strings = content.items.map(item => item.str);
+    fullText += strings.join(" ") + "\n\n";
+  }
+
+  previewEl.textContent = fullText.slice(0, 1000) + "...";
+
+  currentFileName = file.name;
+  prepareChunks(fullText);
+  resumeBanner.style.display = "none";
+  pendingSession = null;
+
+  idbPut("book", { fileName: currentFileName, fullText, savedAt: Date.now() }).catch(() => {});
+  savePosition();
+
+  statusEl.textContent = "Status: Ready to play";
+}
+
+
+// BETTER CHUNKING (sentence-based)
+function prepareChunks(text) {
+  const sentences = text.match(/[^\.!\?]+[\.!\?]+/g) || [text];
+
+  chunks = [];
+  let current = "";
+
+  sentences.forEach(sentence => {
+    if ((current + sentence).length > 280) {
+      chunks.push(current);
+      current = sentence;
+    } else {
+      current += sentence;
+    }
+  });
+
+  if (current) chunks.push(current);
+
+  currentChunkIndex = 0;
+}
+
+
+// START / RESUME / PAUSE / STOP
+
+function startReading() {
+  if (!chunks.length) return alert("Load a PDF first");
+  cancelSpeech();
+  currentChunkIndex = 0;
+  beginPlaybackFromCurrentIndex();
+}
+
+function beginPlaybackFromCurrentIndex() {
+  isPaused = false;
+  isReadingActive = true;
+  setupMediaSession();
+  startKeepAlive();
+  acquireWakeLock();
+  speakChunk();
+}
+
+function speakChunk() {
+  if (currentChunkIndex >= chunks.length) {
+    statusEl.textContent = "Status: Finished";
+    isReadingActive = false;
+    updatePlaybackState("none");
+    releaseWakeLock();
+    stopKeepAlive();
+    savePosition();
+    return;
+  }
+
+  if (isPaused) return;
+
+  const utterance = new SpeechSynthesisUtterance(chunks[currentChunkIndex]);
+  const tokenForThisUtterance = playToken;
+
+  const voices = speechSynthesis.getVoices();
+  utterance.voice = voices[voiceSelect.value];
+
+  utterance.rate = parseFloat(speedSlider.value);
+  utterance.pitch = 1;
+  utterance.volume = 1;
+
+  utterance.onend = () => {
+    if (tokenForThisUtterance !== playToken) return; // stale callback, ignore
+    currentChunkIndex++;
+    savePosition();
+    speakChunk();
+  };
+
+  utterance.onerror = () => {
+    if (tokenForThisUtterance !== playToken) return; // stale callback, ignore
+    // Keep going instead of getting stuck if a single chunk fails to speak.
+    currentChunkIndex++;
+    speakChunk();
+  };
+
+  speechSynthesis.speak(utterance);
+  updatePlaybackState("playing");
+
+  statusEl.textContent =
+    `Reading ${currentChunkIndex + 1} / ${chunks.length}`;
+}
+
+function pauseReading() {
+  speechSynthesis.pause();
+  isPaused = true;
+  updatePlaybackState("paused");
+  releaseWakeLock();
+  statusEl.textContent = "Status: Paused";
+}
+
+function resumeReading() {
+  if (!chunks.length) return;
+
+  if (speechSynthesis.paused) {
+    isPaused = false;
+    isReadingActive = true;
+    acquireWakeLock();
+    startKeepAlive();
+    speechSynthesis.resume();
+    updatePlaybackState("playing");
+    statusEl.textContent = "Status: Resumed";
+  } else {
+    beginPlaybackFromCurrentIndex();
+  }
+}
+
+function stopReading() {
+  cancelSpeech();
+  currentChunkIndex = 0;
+  isPaused = false;
+  isReadingActive = false;
+  updatePlaybackState("none");
+  releaseWakeLock();
+  stopKeepAlive();
+  savePosition();
+  statusEl.textContent = "Status: Stopped";
+}
+
+function skipChunk(delta) {
+  if (!chunks.length) return;
+  cancelSpeech();
+  currentChunkIndex = Math.min(Math.max(currentChunkIndex + delta, 0), chunks.length - 1);
+  savePosition();
+  if (isReadingActive && !isPaused) {
+    speakChunk();
+  }
+}
+
+
+// SCREEN WAKE LOCK — stops the phone auto-locking itself while reading
+async function acquireWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+  } catch (err) {
+    console.warn("Wake Lock request failed:", err);
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+}
+
+
+// SILENT AUDIO KEEP-ALIVE — a real <audio> element gives iOS an active media
+// session, which is what lets Media Session lock-screen controls show up and
+// makes the page less likely to be throttled the instant it backgrounds.
+function startKeepAlive() {
+  silentAudio.play().catch(() => {});
+}
+
+function stopKeepAlive() {
+  silentAudio.pause();
+  silentAudio.currentTime = 0;
+}
+
+
+// MEDIA SESSION — lock screen / AirPods / control center playback controls
+function setupMediaSession() {
+  if (!("mediaSession" in navigator)) return;
+
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: currentFileName || "PDF Audiobook",
+    artist: "PDF Audiobook Reader",
+    artwork: [
+      { src: "icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  });
+
+  navigator.mediaSession.setActionHandler("play", () => resumeReading());
+  navigator.mediaSession.setActionHandler("pause", () => pauseReading());
+  navigator.mediaSession.setActionHandler("stop", () => stopReading());
+  navigator.mediaSession.setActionHandler("previoustrack", () => skipChunk(-1));
+  navigator.mediaSession.setActionHandler("nexttrack", () => skipChunk(1));
+}
+
+function updatePlaybackState(state) {
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = state;
+  }
+}
+
+
+// AUTO-RESUME ON RETURN TO FOREGROUND
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    savePosition();
+    return;
+  }
+
+  // visible again
+  if (isReadingActive && !isPaused) {
+    acquireWakeLock();
+    startKeepAlive();
+    attemptSilentResume();
+  }
+});
+
+function attemptSilentResume() {
+  if (speechSynthesis.speaking || speechSynthesis.pending) return;
+
+  speakChunk();
+
+  setTimeout(() => {
+    if (isReadingActive && !isPaused && !speechSynthesis.speaking) {
+      continueBanner.style.display = "block";
+    }
+  }, 700);
+}
+
+function hideContinuePromptAndResume() {
+  continueBanner.style.display = "none";
+  speakChunk();
+}
+
+
+// PERSISTENCE (IndexedDB) — survive the page/app being fully reloaded
+const DB_NAME = "audiobook-reader";
+const STORE_NAME = "session";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbPut(key, value) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const req = tx.objectStore(STORE_NAME).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDelete(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function savePosition() {
+  const voices = speechSynthesis.getVoices();
+  const voiceName = voices[voiceSelect.value] ? voices[voiceSelect.value].name : null;
+  idbPut("position", {
+    currentChunkIndex,
+    voiceName,
+    speed: speedSlider.value,
+    savedAt: Date.now(),
+  }).catch(() => {});
+}
+
+async function checkForSavedSession() {
+  try {
+    const book = await idbGet("book");
+    const position = await idbGet("position");
+    if (book && book.fullText) {
+      pendingSession = { book, position };
+      const sentenceNote = position ? ` — from sentence ${position.currentChunkIndex + 1}` : "";
+      resumeText.textContent = `Resume "${book.fileName}"${sentenceNote}?`;
+      resumeBanner.style.display = "block";
+    }
+  } catch (err) {
+    console.warn("Could not check for saved session:", err);
+  }
+}
+
+function handleResumeSession() {
+  if (!pendingSession) return;
+  const { book, position } = pendingSession;
+
+  currentFileName = book.fileName;
+  fullText = book.fullText;
+  prepareChunks(fullText);
+
+  if (position) {
+    currentChunkIndex = Math.min(position.currentChunkIndex || 0, Math.max(chunks.length - 1, 0));
+    if (position.speed) {
+      speedSlider.value = position.speed;
+      speedValue.textContent = position.speed + "x";
+    }
+    if (position.voiceName) {
+      lastSelectedVoiceName = position.voiceName;
+      const voices = speechSynthesis.getVoices();
+      const idx = voices.findIndex(v => v.name === position.voiceName);
+      if (idx >= 0) voiceSelect.value = idx;
+    }
+  }
+
+  previewEl.textContent = fullText.slice(0, 1000) + "...";
+  resumeBanner.style.display = "none";
+  pendingSession = null;
+
+  // This click is a real user gesture, so we can start speech immediately.
+  beginPlaybackFromCurrentIndex();
+}
+
+function handleDiscardSession() {
+  idbDelete("book").catch(() => {});
+  idbDelete("position").catch(() => {});
+  resumeBanner.style.display = "none";
+  pendingSession = null;
+}
+
+checkForSavedSession();
+
+</script>
+
+</body>
+</html>
