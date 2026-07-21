@@ -144,6 +144,13 @@
 
 <div id="status">Status: Idle</div>
 
+<div id="chunkNav" style="display:none; margin-top:6px; font-size:13px;">
+  Sentence
+  <input type="number" id="chunkJumpInput" min="1" style="width:64px;">
+  of <span id="chunkTotal">0</span>
+  <button onclick="jumpToChunkFromInput()">Go</button>
+</div>
+
 <div id="textPreview"></div>
 
 <div class="note">
@@ -190,6 +197,44 @@ const resumeText = document.getElementById("resumeText");
 const continueBanner = document.getElementById("continueBanner");
 const bookmarksPanel = document.getElementById("bookmarksPanel");
 const silentAudio = document.getElementById("silentAudio");
+const chunkNav = document.getElementById("chunkNav");
+const chunkJumpInput = document.getElementById("chunkJumpInput");
+const chunkTotalEl = document.getElementById("chunkTotal");
+
+chunkJumpInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    jumpToChunkFromInput();
+  }
+});
+
+// Keeps the "Sentence N of M" control in sync with playback, without
+// clobbering whatever the user is mid-typing before they hit Go.
+function updateChunkPositionUI() {
+  chunkNav.style.display = chunks.length ? "block" : "none";
+  chunkTotalEl.textContent = chunks.length;
+  chunkJumpInput.max = Math.max(chunks.length, 1);
+  if (document.activeElement !== chunkJumpInput) {
+    chunkJumpInput.value = chunks.length ? currentChunkIndex + 1 : "";
+  }
+}
+
+function jumpToChunk(index) {
+  if (!chunks.length) return;
+  cancelSpeech();
+  currentChunkIndex = Math.min(Math.max(index, 0), chunks.length - 1);
+  savePosition();
+  updateChunkPositionUI();
+  // Called from a click/Enter-key handler, so this is a valid user gesture.
+  beginPlaybackFromCurrentIndex();
+}
+
+function jumpToChunkFromInput() {
+  if (!chunks.length) return;
+  const raw = parseInt(chunkJumpInput.value, 10);
+  if (Number.isNaN(raw)) return;
+  jumpToChunk(raw - 1);
+}
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
 
@@ -305,6 +350,7 @@ function prepareChunks(text) {
   if (current) chunks.push(current);
 
   currentChunkIndex = 0;
+  updateChunkPositionUI();
 }
 
 
@@ -314,6 +360,7 @@ function startReading() {
   if (!chunks.length) return alert("Load a PDF first");
   cancelSpeech();
   currentChunkIndex = 0;
+  updateChunkPositionUI();
   beginPlaybackFromCurrentIndex();
 }
 
@@ -365,6 +412,7 @@ function speakChunk() {
 
   speechSynthesis.speak(utterance);
   updatePlaybackState("playing");
+  updateChunkPositionUI();
 
   statusEl.textContent =
     `Reading ${currentChunkIndex + 1} / ${chunks.length}`;
@@ -403,6 +451,7 @@ function stopReading() {
   releaseWakeLock();
   stopKeepAlive();
   savePosition();
+  updateChunkPositionUI();
   statusEl.textContent = "Status: Stopped";
 }
 
@@ -411,6 +460,7 @@ function skipChunk(delta) {
   cancelSpeech();
   currentChunkIndex = Math.min(Math.max(currentChunkIndex + delta, 0), chunks.length - 1);
   savePosition();
+  updateChunkPositionUI();
   if (isReadingActive && !isPaused) {
     speakChunk();
   }
@@ -623,6 +673,7 @@ async function hydrateFromStorage() {
       }
     }
 
+    updateChunkPositionUI();
     previewEl.textContent = fullText.slice(0, 1000) + "...";
     statusEl.textContent =
       `Status: Loaded "${currentFileName}" — tap ⏯ Resume to continue from sentence ${currentChunkIndex + 1} of ${chunks.length}`;
@@ -654,6 +705,7 @@ function handleDiscardSession() {
   currentBookKey = null;
   previewEl.textContent = "";
   statusEl.textContent = "Status: Idle";
+  updateChunkPositionUI();
 }
 
 // BOOKMARKS — user-created markers into the current book's sentence chunks
@@ -729,12 +781,8 @@ async function renderBookmarksList() {
 }
 
 function jumpToBookmark(chunkIndex) {
-  if (!chunks.length) return;
-  cancelSpeech();
-  currentChunkIndex = Math.min(Math.max(chunkIndex, 0), chunks.length - 1);
-  savePosition();
   // This runs from a button click, so it's a valid user gesture for speech.
-  beginPlaybackFromCurrentIndex();
+  jumpToChunk(chunkIndex);
 }
 
 async function deleteBookmark(id) {
